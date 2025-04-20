@@ -1,0 +1,153 @@
+import requests
+from bs4 import BeautifulSoup
+import re
+import pandas as pd
+import sqlite3
+import time
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+
+driver_path = "C:/mypython/driver/chromedriver.exe"
+service = Service(driver_path)
+
+options = webdriver.ChromeOptions()
+options.add_argument("--headless")
+driver = webdriver.Chrome(service=service, options=options)
+
+headers = {'User-Agent': 'Mozilla/5.0'}
+url = "http://www.cgv.co.kr/movies/?lt=1&ft=1"
+res = requests.get(url, headers=headers)
+soup = BeautifulSoup(res.text, 'html.parser')
+movies = soup.select('div.sect-movie-chart > ol > li')
+
+movie_ids = []
+for movie in movies:
+    link_tag = movie.select_one('div.box-contents a')
+    if link_tag:
+        href = link_tag.get("href", "")
+        match = re.search(r"midx=(\d+)", href)
+        if match:
+            midx = match.group(1)
+            if midx not in movie_ids:
+                movie_ids.append(midx)
+
+basic_data = {}
+
+for midx in movie_ids:
+    url = f"http://www.cgv.co.kr/movies/detail-view/?midx={midx}"
+    res = requests.get(url, headers=headers)
+    soup = BeautifulSoup(res.text, 'html.parser')
+    driver.get(url)
+    time.sleep(1.5)
+
+    movie_detail = soup.select_one('div.wrap-movie-detail')
+    if not movie_detail:
+        continue
+
+    title = movie_detail.select_one('div.sect-base-movie div > strong')
+    percent_tag = soup.find('strong', class_='percent')
+    ticket_rate = ''
+    if percent_tag:
+        span = percent_tag.find('span')
+        if span:
+            ticket_rate = span.text.strip()
+
+    dt_tag = soup.find('dt', string=lambda text: text and '감독' in text)
+    supervisor = dt_tag.find_next_sibling('dd').text.strip() if dt_tag else ''
+    
+    a_tags = soup.select('dd.on a')
+    actor_list = ', '.join([a.text.strip() for a in a_tags])
+    
+    genre_tag = next((dt for dt in soup.find_all('dt') if '장르' in dt.get_text()), None)
+    genre_list = ''
+    if genre_tag:
+        raw_text = genre_tag.get_text().replace('\xa0', ' ').strip()
+        raw_text = re.sub(r'\s+', ' ', raw_text)
+        genre_text = raw_text.split(':', 1)[-1].strip()
+        genre_list = ', '.join([g.strip() for g in genre_text.split(',')])
+
+    # 등급과 개봉일
+    rating = ''
+    release_date = ''
+    spec_section = soup.select_one("div.spec")
+    if spec_section:
+        spec_text = spec_section.get_text(" | ", strip=True)
+        basic_info_match = re.search(r"기본 정보 : \| ([^|,]+)", spec_text)
+        if basic_info_match:
+            rating = basic_info_match.group(1).strip()
+        release_match = re.search(r"개봉 : \| ([\d.]+)", spec_text)
+        if release_match:
+            release_date = release_match.group(1).strip()
+
+    story = movie_detail.select_one('div.sect-story-movie')
+    story_text = story.get_text(strip=True) if story else ''
+    image_tag = movie_detail.select_one('div.box-image span.thumb-image img')
+    image_url = image_tag['src'] if image_tag else ''
+
+    review_elements = driver.find_elements(By.CSS_SELECTOR, "ul#movie_point_list_container .box-comment p")
+    reviews = [r.text for r in review_elements if r.text.strip() != '']
+
+    gender_info = driver.find_elements(By.CSS_SELECTOR, "#jqplot_sex .jqplot-donut-series")
+    male_ratio, female_ratio = None, None
+    for g in gender_info:
+        text = g.text.replace('%', '').strip()
+        if "남" in text:
+            male_ratio = re.sub(r"[^0-9.]", "", text)
+        elif "여" in text:
+            female_ratio = re.sub(r"[^0-9.]", "", text)
+
+    age_percentages = [e.text.replace('%','') for e in driver.find_elements(By.CSS_SELECTOR, "#jqplot_age .jqplot-point-label")]
+    age_labels = ['10대', '20대', '30대', '40대', '50대 이상']
+    age_data = {label: value for label, value in zip(age_labels, age_percentages)} if len(age_percentages) == len(age_labels) else {}
+
+    charm_points = {}
+    emotion_points = {}
+    try:
+        circles = driver.find_elements(By.CSS_SELECTOR, "div.amcharts-main-div svg g g circle")
+        idx = 0
+        for circle in circles:
+            aria = circle.get_attribute("aria-label")
+            if aria:
+                match = re.search(r'(.*)\s(\d+)$', aria.strip())
+                if match:
+                    key = match.group(1).strip()
+                    value = int(match.group(2))
+                    if idx < 5:
+                        charm_points[key] = value
+                    else:
+                        emotion_points[key] = value
+                    idx += 1
+    except:
+        pass
+
+    combined = {
+        'midx': midx,
+        'title': title.get_text(strip=True) if title else '',
+        'percent': ticket_rate,
+        'director': supervisor,
+        'actors': actor_list,
+        'genre': genre_list,
+        'release_date': release_date,
+        'rating': rating,
+        'story': story_text,
+        'image_url': image_url,
+        'reviews': ' / '.join(reviews),
+        'male_pct': male_ratio,
+        'female_pct': female_ratio,
+        'OST': 'N/A'
+    }
+
+    combined.update(charm_points)
+    combined.update(emotion_points)
+    basic_data[midx] = combined
+
+df = pd.DataFrame(list(basic_data.values()))
+df.to_csv("cgv_movie_data_rating_release_fixed.csv", index=False, encoding="utf-8-sig")
+
+conn = sqlite3.connect("cgv_movie_data_rating_release_fixed.db")
+df.to_sql("movies", conn, if_exists="replace", index=False)
+conn.close()
+
+print(" CSV 저장: cgv_movie_data_rating_release_fixed.csv")
+print(" DB 저장: cgv_movie_data_rating_release_fixed.db")
