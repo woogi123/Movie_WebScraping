@@ -88,6 +88,17 @@ def get_unique_genres(df):
     return sorted(set(all_genres))
 unique_genres = get_unique_genres(df)
 
+def get_color(score):
+    if score <= 20:
+        return 'rgba(231, 76, 60, 0.8)'       # 붉은 계열
+    elif score <= 30:
+        return 'rgba(241, 196, 15, 0.8)'      # 노란 계열
+    elif score <= 40:
+        return 'rgba(243, 156, 18, 0.8)'      # 주황 계열
+    else:
+        return 'rgba(46, 204, 113, 0.8)'      # 연두 계열
+
+
 # 사이드바 
 st.sidebar.header("📝 Check your style")
 selected_genre = st.sidebar.selectbox("🎯보고 싶은 장르 선택하기📌", unique_genres)
@@ -101,7 +112,7 @@ with st.sidebar.expander("💖 감정 포인트 개인화"):
 search_button = st.sidebar.button("search")
 
 # 탭 설정 
-tab1, tab2, tab3 = st.tabs(["🎬 현재 상영 영화 TOP", "💯 맞춤 추천 결과", "🔍 영화 검색"])
+tab1, tab2, tab3, tab4 = st.tabs(["🎬 현재 상영 영화 TOP", "💯 맞춤 추천 결과", "🔍 영화 검색", "📈전체 평점 비교"])
 
 # tab 1 
 with tab1:
@@ -209,6 +220,36 @@ with tab3:
                         emotion_cols = ['emotion_1', 'emotion_2', 'emotion_3', 'emotion_4', 'emotion_5']
                         emotion_values = [float(row.get(col, 0)) if str(row.get(col, "")).replace('.', '', 1).isdigit() else 0 for col in emotion_cols]
 
+                        def draw_total_score_chart(score):
+                            color = get_color(score)
+
+                            fig = go.Figure(go.Bar(
+                                x=[score],
+                                y=["평점"],
+                                orientation='h',
+                                marker=dict(
+                                    color=color,
+                                    line=dict(color='rgba(0,0,0,0.3)', width=1)
+                                ),
+                                text=f"{score:.1f}점",
+                                textposition='auto'
+                            ))
+
+                            fig.update_layout(
+                                xaxis=dict(range=[0, 100], title='점수'),
+                                yaxis=dict(showticklabels=True),
+                                height=100,
+                                margin=dict(t=5, b=20, l=30, r=20)
+                            )
+                            return fig
+
+                        # 매력 + 감정 통합
+                        total_values = charm_values + emotion_values
+                        average_score = round(np.nanmean(total_values), 2)  # 소수점 둘째 자리
+                        
+                        st.markdown("**종합 평점**")
+                        st.plotly_chart(draw_total_score_chart(average_score), use_container_width=True)
+
                     charm_col, emotion_col, gender_col = st.columns(3)
                     with charm_col:
                         st.markdown("### ✨ 매력 포인트")
@@ -218,7 +259,6 @@ with tab3:
                         st.pyplot(draw_radar_chart(emotion_labels, emotion_values))
                     with gender_col:
                         st.markdown("### 💁‍♀️/💁‍♂️ 성비 차트")
-                        row = df.iloc[idx]
                         fig = draw_gender_chart(row)
                         st.pyplot(fig)
 
@@ -231,5 +271,35 @@ with tab3:
                     else:
                         st.write("아직 등록된 리뷰가 없습니다.")
 
+# tab 4
+with tab4:
+    st.subheader("📊 전체 영화 평점 비교")
 
+    # 종합 점수 계산
+    cols = ['attraction_1','attraction_2','attraction_3','attraction_4','attraction_5',
+            'emotion_1','emotion_2','emotion_3','emotion_4','emotion_5']
 
+    df[cols] = df[cols].apply(pd.to_numeric, errors='coerce')
+    df['score'] = df[cols].fillna(0).sum(axis=1) / 10
+
+    sorted_df = df.sort_values('score', ascending=False)
+    colors = [get_color(score) for score in sorted_df['score']]
+
+    fig = go.Figure(go.Bar(
+        x=sorted_df['score'],
+        y=sorted_df['title'],
+        orientation='h',
+        marker=dict(color=colors),
+        text=[f"{s:.1f}점" for s in sorted_df['score']],
+        textposition='auto'
+    ))
+
+    fig.update_layout(
+        height=700,
+        margin=dict(l=100, r=30, t=40, b=40),
+        xaxis_title="점수",
+        title="전체 영화 종합 점수 (색상별 구간 표시)",
+        yaxis=dict(autorange="reversed")  # 높은 점수가 위로
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
